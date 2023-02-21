@@ -70,6 +70,43 @@ func NewAppLogger(config *AppLoggerConfig) *appLogger {
 	}
 }
 
+func NewAppZapLogger(config *AppLoggerConfig) *zap.Logger {
+	logLevel := DEFAULT_LOG_LEVEL
+	filePath := DEFAULT_LOG_FILE_PATH
+
+	if config != nil {
+		if config.FilePath != "" {
+			filePath = config.FilePath
+		}
+
+		logLevel = config.Level
+	}
+
+	cfg := zap.NewProductionEncoderConfig()
+	cfg.EncodeTime = zapcore.ISO8601TimeEncoder
+
+	fileEncoder := zapcore.NewJSONEncoder(cfg)
+	consoleEncoder := zapcore.NewConsoleEncoder(cfg)
+
+	writer := zapcore.AddSync(&lumberjack.Logger{
+		Filename:   filePath,
+		MaxSize:    10, // megabytes
+		MaxBackups: 3,
+		MaxAge:     28, // days
+	})
+
+	core := zapcore.NewTee(
+		zapcore.NewCore(fileEncoder, writer, logLevel),
+		zapcore.NewCore(consoleEncoder, zapcore.AddSync(os.Stdout), logLevel),
+	)
+	logger := zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
+	if config.Name != "" {
+		logger = logger.Named(config.Name)
+	}
+
+	return logger
+}
+
 func NewTestAppLogger(dir string) *appLogger {
 	logLevel := DEFAULT_LOG_LEVEL
 	filePath := DEFAULT_LOG_FILE_PATH
