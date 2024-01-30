@@ -13,12 +13,12 @@ const DEFAULT_LOG_FILE_PATH = "logs/app.log"
 const DEFAULT_LOG_LEVEL = zapcore.DebugLevel
 
 type AppLogger interface {
-	Info(msg string, fields ...zapcore.Field)
-	Warn(msg string, fields ...zapcore.Field)
-	Debug(msg string, fields ...zapcore.Field)
-	Error(msg string, fields ...zapcore.Field)
-	Panic(msg string, fields ...zapcore.Field)
-	Fatal(msg string, fields ...zapcore.Field)
+	Info(msg string, fields ...interface{})
+	Warn(msg string, fields ...interface{})
+	Debug(msg string, fields ...interface{})
+	Error(msg string, fields ...interface{})
+	Panic(msg string, fields ...interface{})
+	Fatal(msg string, fields ...interface{})
 }
 
 type appLogger struct {
