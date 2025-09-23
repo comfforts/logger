@@ -1,6 +1,6 @@
 module github.com/comfforts/logger
 
-go 1.22.12
+go 1.24.7
 
 require (
 	go.uber.org/zap v1.27.0
