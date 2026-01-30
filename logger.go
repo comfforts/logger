@@ -134,6 +134,11 @@ func LoggerFromContext(ctx context.Context) (Logger, error) {
 	return logger, nil
 }
 
+// WithAttrs returns a new slog.Logger with the given attributes.
+func WithAttrs(attrs ...any) *slog.Logger {
+	return base.With(attrs...)
+}
+
 func GetSlogLogger() *slog.Logger {
 	if base != nil {
 		return base
