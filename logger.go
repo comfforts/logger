@@ -3,10 +3,13 @@ package logger
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -18,15 +21,102 @@ const NO_LOGGER_FOUND = "no logger found in context"
 
 var ErrNoLoggerInContext = errors.New(NO_LOGGER_FOUND)
 
-type LoggerContextKey string
+var (
+	once    sync.Once
+	base    *slog.Logger
+	initErr error
+)
 
-const contextLoggerKey LoggerContextKey = "ContextLoggerKey"
+type loggerContextKey string
+
+const contextLoggerKey loggerContextKey = "ContextLoggerKey"
 
 type Logger interface {
 	Debug(msg string, fields ...any)
 	Info(msg string, fields ...any)
 	Warn(msg string, fields ...any)
 	Error(msg string, fields ...any)
+}
+
+type Config struct {
+	Level     slog.Leveler // slog.LevelInfo, slog.LevelDebug, ...
+	Format    string       // "json" or "text"
+	Writer    io.Writer    // defaults to os.Stdout
+	AddSource bool
+}
+
+type Option func(*Config)
+
+func WithLevel(level slog.Leveler) Option {
+	return func(c *Config) { c.Level = level }
+}
+
+func WithFormat(format string) Option {
+	return func(c *Config) { c.Format = format }
+}
+
+func WithWriter(w io.Writer) Option {
+	return func(c *Config) { c.Writer = w }
+}
+
+func WithAddSource(add bool) Option {
+	return func(c *Config) { c.AddSource = add }
+}
+
+func Init(opts ...Option) error {
+	once.Do(func() {
+		cfg := defaultConfig()
+		for _, opt := range opts {
+			opt(&cfg)
+		}
+		base, initErr = build(cfg)
+	})
+	return initErr
+}
+
+func build(c Config) (*slog.Logger, error) {
+	opts := &slog.HandlerOptions{
+		Level:     c.Level,
+		AddSource: c.AddSource,
+	}
+
+	var h slog.Handler
+	switch strings.ToLower(strings.TrimSpace(c.Format)) {
+	case "json":
+		h = slog.NewJSONHandler(c.Writer, opts)
+	case "text", "console":
+		h = slog.NewTextHandler(c.Writer, opts)
+	default:
+		h = slog.NewJSONHandler(c.Writer, opts)
+	}
+
+	return slog.New(h), nil
+}
+
+func defaultConfig() Config {
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("ENV")))
+	goEnv := strings.ToLower(strings.TrimSpace(os.Getenv("GO_ENV")))
+	infra := strings.ToLower(strings.TrimSpace(os.Getenv("INFRA")))
+
+	logLevel := &slog.LevelVar{}
+	logLevel.Set(slog.LevelInfo)
+
+	dev := env == "dev" || env == "development" || goEnv == "dev" || goEnv == "development" || infra == "local"
+
+	format := "json"
+	if dev {
+		// Use text format
+		format = "text"
+		// Set log level to Debug
+		logLevel.Set(slog.LevelDebug)
+	}
+
+	return Config{
+		Level:     logLevel,
+		Format:    format,
+		Writer:    os.Stdout,
+		AddSource: true,
+	}
 }
 
 // WithLogger returns a new context with the given logger.
@@ -45,42 +135,75 @@ func LoggerFromContext(ctx context.Context) (Logger, error) {
 }
 
 func GetSlogLogger() *slog.Logger {
-	// Initialize log level to Info
-	logLevel := &slog.LevelVar{}
-	logLevel.Set(slog.LevelInfo)
-
-	// Set log level to Debug if running in local infrastructure
-	if os.Getenv("INFRA") == "local" {
-		logLevel.Set(slog.LevelDebug)
+	if base != nil {
+		return base
 	}
 
-	// Setup slog handler options. TODO update for log formatting
-	opts := &slog.HandlerOptions{
-		Level: logLevel,
+	// Initialize if not already done
+	err := Init()
+	if err != nil {
+		// Defensive fallback; should not happen unless build failed unexpectedly.
+		fmt.Println("######")
+		fmt.Printf("Error occured, fallback logger initialized, logger will discard logs, error: %v\n", err)
+		fmt.Println("######")
+		fmt.Println()
+		return slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-
-	// Using TextHandler. TODO use JsonHandler for structured logging
-	handler := slog.NewTextHandler(os.Stdout, opts)
-
-	l := slog.New(handler)
-	slog.SetDefault(l)
-
-	return l
+	slog.SetDefault(base)
+	return base
 }
 
 func GetSlogMultiLogger(dir string) *slog.Logger {
+	if base != nil {
+		return base
+	}
+
+	// lumberjack writer for log rotation
+	logWriter := GetFileWriter(dir)
+
+	// MultiWriter for logs in both file & console
+	multiWriter := io.MultiWriter(os.Stdout, logWriter)
+
+	// Initialize the logger with multiWriter
+	err := Init(WithWriter(multiWriter))
+	if err != nil {
+		// Defensive fallback; should not happen unless build failed unexpectedly.
+		fmt.Println("######")
+		fmt.Printf("Error occured, fallback logger initialized, logger will discard logs, error: %v\n", err)
+		fmt.Println("######")
+		fmt.Println()
+		return slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	slog.SetDefault(base)
+	return base
+}
+
+func GetSlogFileLogger(dir string) *slog.Logger {
+	if base != nil {
+		return base
+	}
+
+	// lumberjack writer for log rotation
+	fileWriter := GetFileWriter(dir)
+
+	// Initialize the logger with fileWriter
+	err := Init(WithWriter(fileWriter))
+	if err != nil {
+		// Defensive fallback; should not happen unless build failed unexpectedly.
+		fmt.Println("######")
+		fmt.Printf("Error occured, fallback logger initialized, logger will discard logs, error: %v\n", err)
+		fmt.Println("######")
+		fmt.Println()
+		return slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	slog.SetDefault(base)
+	return base
+}
+
+func GetFileWriter(dir string) io.Writer {
 	filePath := DEFAULT_LOG_FILE_PATH
 	if dir != "" {
 		filePath = filepath.Join(dir, filePath)
-	}
-
-	// Initialize log level to Info
-	logLevel := &slog.LevelVar{}
-	logLevel.Set(slog.LevelInfo)
-
-	// Set log level to Debug if running in local infrastructure
-	if os.Getenv("INFRA") == "local" {
-		logLevel.Set(slog.LevelDebug)
 	}
 
 	// lumberjack writer for log rotation
@@ -92,21 +215,11 @@ func GetSlogMultiLogger(dir string) *slog.Logger {
 		Compress:   true, // compress rotated logs
 	}
 
-	// MultiWriter for logs in both file & console
-	multiWriter := io.MultiWriter(os.Stdout, logWriter)
+	return logWriter
+}
 
-	// Setup slog handler options. TODO update for log formatting
-	opts := &slog.HandlerOptions{
-		Level: logLevel,
-	}
-
-	// Using TextHandler. TODO use JsonHandler for structured logging
-	handler := slog.NewTextHandler(multiWriter, opts)
-
-	l := slog.New(handler)
-	slog.SetDefault(l)
-
-	return l
+func GetMultiWriter(dests ...io.Writer) io.Writer {
+	return io.MultiWriter(dests...)
 }
 
 func GetZapLogger(dir, namedAs string) *zap.Logger {
