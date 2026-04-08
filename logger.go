@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -124,19 +125,68 @@ func WithLogger(ctx context.Context, logger Logger) context.Context {
 	return context.WithValue(ctx, contextLoggerKey, logger)
 }
 
+// SlogFromContext retrieves the slog.Logger from context.
+// If none is found, returns error.
+func SlogFromContext(ctx context.Context) (*slog.Logger, error) {
+	l, ok := ctx.Value(contextLoggerKey).(*slog.Logger)
+	if !ok || l == nil {
+		return nil, ErrNoLoggerInContext
+	}
+	return l, nil
+}
+
+func WithAttrs(logger Logger, attrs ...any) Logger {
+	if logger == nil {
+		return GetSlogLogger().With(attrs...)
+	}
+
+	if l, ok := logger.(*slog.Logger); ok {
+		return l.With(attrs...)
+	}
+
+	return GetSlogLogger().With(attrs...)
+}
+
+// WithContextAttrs retrieves the slog.Logger from context, adds the given attributes, and returns a new context with the updated logger.
+func WithContextAttrs(ctx context.Context, attrs ...any) context.Context {
+	l, err := SlogFromContext(ctx)
+	if err != nil {
+		l = GetSlogLogger()
+	}
+	return WithLogger(ctx, l.With(attrs...))
+}
+
+// WithTraceAttrs retrieves the current trace span from context and adds its trace_id and span_id as attributes to the logger in context.
+func WithTraceAttrs(ctx context.Context) context.Context {
+	span := trace.SpanFromContext(ctx)
+	if !span.SpanContext().IsValid() {
+		return ctx
+	}
+
+	return WithContextAttrs(
+		ctx,
+		"trace_id", span.SpanContext().TraceID().String(),
+		"span_id", span.SpanContext().SpanID().String(),
+	)
+}
+
 // LoggerFromContext retrieves the logger from context.
 // If none is found, returns a fallback logger.
 func LoggerFromContext(ctx context.Context) (Logger, error) {
+	if l, err := SlogFromContext(ctx); err == nil {
+		return l, nil
+	}
+
 	logger, ok := ctx.Value(contextLoggerKey).(Logger)
-	if !ok {
+	if !ok || logger == nil {
 		return nil, ErrNoLoggerInContext
 	}
 	return logger, nil
 }
 
-// WithAttrs returns a new slog.Logger with the given attributes.
-func WithAttrs(attrs ...any) *slog.Logger {
-	return base.With(attrs...)
+// BaseWithAttrs returns a new slog.Logger with the given attributes, using the base logger as the source.
+func BaseWithAttrs(attrs ...any) *slog.Logger {
+	return GetSlogLogger().With(attrs...)
 }
 
 func GetSlogLogger() *slog.Logger {
